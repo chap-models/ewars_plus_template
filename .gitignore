@@ -1,0 +1,21 @@
+.Rhistory
+.RData
+/.Rproj.user
+.DS_Store
+ewars_plus_template.Rproj
+example_data/model*
+example_data/predictions*.csv
+example_data_monthly/model*
+example_data_monthly/predictions*.csv
+*_lags.rds
+
+# Generated eval artefacts (regenerable via `chap eval` + `chap export-metrics`)
+laos_eval*.nc
+laos_eval*.html
+laos_backtest*.html
+laos_eval*_metrics.csv
+example_data_monthly/historic_acre.csv
+example_data_monthly/future_acre.csv
+example_data_monthly/test_config_*.yaml
+model_configuration_for_run.yaml
+.venv/
