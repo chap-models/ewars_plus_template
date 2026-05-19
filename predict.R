@@ -19,6 +19,9 @@ predict_chap <- function(model_fn, hist_fn, future_fn, preds_fn, config_fn = "")
   precision                 <- user_options$precision %||% 0.01
   region_seasonal           <- user_options$region_seasonal %||% FALSE
   location_specific_effects <- user_options$location_specific_effects %||% FALSE
+  nonlinearity              <- get_nonlinearity_backend(
+    user_options$nonlinearity %||% "rw1_inla_group"
+  )
 
   historic_df <- read.csv(hist_fn)
   future_df   <- read.csv(future_fn)
@@ -43,7 +46,8 @@ predict_chap <- function(model_fn, hist_fn, future_fn, preds_fn, config_fn = "")
                             lags_path = lags_companion_path(model_fn))
     generated <- generate_lagged_model(
       df, covariate_names, lag_map, region_seasonal,
-      location_specific_effects = location_specific_effects
+      location_specific_effects = location_specific_effects,
+      nonlinearity = nonlinearity
     )
   }
   formula_used <- generated$formula

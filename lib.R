@@ -179,38 +179,94 @@ pick_best_lag_per_location_covariate <- function(score_df) {
   do.call(rbind, out)
 }
 
-### Model formula builders (shared by predict.R) ###############################
+### Nonlinearity backends ######################################################
 #
-# Mirrors ewars_Plus's `selected_Model_form_rw`: a per-covariate RW1 smooth on
-# the `inla.group`'d shifted column, no separate linear term (the RW1 captures
-# the exposure-response shape). With `location_specific_effects = TRUE` we
-# additionally add a per-location RW1 deviation on the same grouped column
-# (separate column name, `replicate = ID_spat`) — a hierarchical decomposition
-# into a shared global exposure-response + location-specific deviation, with
-# partial pooling via a shared precision hyperprior.
+# A backend is a function with signature
+#   function(df, covariate, location_specific_effects) -> list(df, terms)
+# It receives a data frame that already has the shifted `<cov>_lag` column,
+# mutates it with whatever columns its parameterisation needs, and returns the
+# formula fragments it wants the linear predictor to contain. The orchestrator
+# `generate_lagged_model` paste()s the fragments together.
+#
+# Adding a backend: define the function, register it in `nonlinearity_backends`.
+# Existing callers pick a backend via `user_options$nonlinearity` (config).
+
+# Default: a single RW1 smooth on inla.group'd shifted column per covariate.
+# Matches ewars_Plus's `selected_Model_form_rw`. With location_specific_effects
+# additionally adds a per-location RW1 deviation on the same grouped column
+# (distinct name so INLA accepts both terms) — global shape + per-location
+# partial-pooled deviation.
+backend_rw1_inla_group <- function(df, covariate,
+                                   location_specific_effects = FALSE) {
+  col <- lagged_col_name(covariate)
+  grp <- paste0(col, "_grp")
+  df[[grp]] <- inla.group(df[[col]])
+  terms <- sprintf("f(%s, model='rw1', scale.model=TRUE)", grp)
+  if (location_specific_effects) {
+    grp_loc <- paste0(col, "_grp_loc")
+    df[[grp_loc]] <- df[[grp]]  # INLA needs a distinct column name per f()
+    terms <- c(
+      terms,
+      sprintf("f(%s, model='rw1', scale.model=TRUE, replicate=ID_spat)",
+              grp_loc)
+    )
+  }
+  list(df = df, terms = terms)
+}
+
+# Simpler baseline: linear in the *standardised* shifted column. Standardising
+# is necessary so INLA's Newton-Raphson optimiser converges on raw covariate
+# scales (rainfall in mm can run into the hundreds). NA values in the shifted
+# column are imputed to 0 (the standardised mean) so prediction rows with NA
+# covariates still produce a finite linear predictor. With
+# `location_specific_effects = TRUE`, adds a per-location random slope on the
+# standardised column via `f(ID_spat_<cov>, <col>_z, model='iid')`.
+backend_linear <- function(df, covariate,
+                           location_specific_effects = FALSE) {
+  col <- lagged_col_name(covariate)
+  z_col <- paste0(col, "_z")
+  mu_x <- mean(df[[col]], na.rm = TRUE)
+  sd_x <- stats::sd(df[[col]], na.rm = TRUE)
+  if (!is.finite(sd_x) || sd_x == 0) sd_x <- 1
+  z <- (df[[col]] - mu_x) / sd_x
+  z[is.na(z)] <- 0
+  df[[z_col]] <- z
+  terms <- z_col
+  if (location_specific_effects) {
+    spat_col <- paste0("ID_spat_", covariate)
+    df[[spat_col]] <- as.integer(as.factor(df$location))
+    terms <- c(terms,
+      sprintf("f(%s, %s, model='iid')", spat_col, z_col))
+  }
+  list(df = df, terms = terms)
+}
+
+nonlinearity_backends <- list(
+  rw1_inla_group = backend_rw1_inla_group,
+  linear         = backend_linear
+)
+
+get_nonlinearity_backend <- function(name) {
+  if (!name %in% names(nonlinearity_backends)) {
+    stop("Unknown nonlinearity backend: '", name, "'. Available: ",
+         paste(names(nonlinearity_backends), collapse = ", "), ".",
+         call. = FALSE)
+  }
+  nonlinearity_backends[[name]]
+}
+
+### Model formula builder ######################################################
 
 generate_lagged_model <- function(df, covariates, lag_map, region_seasonal,
-                                  location_specific_effects = FALSE) {
+                                  location_specific_effects = FALSE,
+                                  nonlinearity = backend_rw1_inla_group) {
   df <- add_lagged_columns(df, covariates, lag_map)
 
   smooth_terms <- character()
   for (cov in covariates) {
-    col <- lagged_col_name(cov)
-    grp <- paste0(col, "_grp")
-    df[[grp]] <- inla.group(df[[col]])
-    smooth_terms <- c(
-      smooth_terms,
-      sprintf("f(%s, model='rw1', scale.model=TRUE)", grp)
-    )
-    if (location_specific_effects) {
-      grp_loc <- paste0(col, "_grp_loc")
-      df[[grp_loc]] <- df[[grp]]  # INLA needs a distinct column name per f()
-      smooth_terms <- c(
-        smooth_terms,
-        sprintf("f(%s, model='rw1', scale.model=TRUE, replicate=ID_spat)",
-                grp_loc)
-      )
-    }
+    res <- nonlinearity(df, cov, location_specific_effects)
+    df          <- res$df
+    smooth_terms <- c(smooth_terms, res$terms)
   }
 
   formula_str <- paste(

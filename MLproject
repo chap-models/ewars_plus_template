@@ -34,6 +34,10 @@ user_options:
     type: boolean
     default: false
     description: If true, add a per-location RW1 deviation (replicate=ID_spat) on inla.group(<cov>_lag) for each covariate, in addition to the shared global smooth — hierarchical "global curve + per-location deviation" with partial pooling.
+  nonlinearity:
+    type: string
+    default: rw1_inla_group
+    description: Which backend to use for the lagged-covariate effect. "rw1_inla_group" (default) — RW1 smooth on the inla.group()'d shifted column (matches ewars_Plus's selected_Model_form_rw). "linear" — plain linear term in the shifted column. New backends can be registered in lib.R without touching predict.R.
 
 meta_data:
   display_name: CHAP-EWARS-Plus Model
