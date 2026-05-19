@@ -10,13 +10,12 @@ source("lib.R")
 # Build the production formula matching ewars_Plus's `selected_Model_form_rw`:
 # a per-covariate RW1 smooth on the inla.group()'d shifted column, no separate
 # linear term (the RW1 captures the exposure-response shape).
-generate_lagged_model <- function(df, covariates, nlag, region_seasonal) {
-  stopifnot(length(nlag) == length(covariates))
-  df <- add_lagged_columns(df, covariates, nlag)
+generate_lagged_model <- function(df, covariates, lag_map, region_seasonal) {
+  df <- add_lagged_columns(df, covariates, lag_map)
 
   smooth_terms <- character()
-  for (i in seq_along(covariates)) {
-    col <- lagged_col_name(covariates[i], nlag[[i]])
+  for (cov in covariates) {
+    col <- lagged_col_name(cov)
     grp <- paste0(col, "_grp")
     df[[grp]] <- inla.group(df[[col]])
     smooth_terms <- c(
@@ -82,9 +81,9 @@ predict_chap <- function(model_fn, hist_fn, future_fn, preds_fn, config_fn = "")
   if (length(covariate_names) == 0) {
     generated <- generate_basic_model(df, region_seasonal)
   } else {
-    nlag <- resolve_lags(historic_df, covariate_names, user_options,
-                         lags_path = lags_companion_path(model_fn))
-    generated <- generate_lagged_model(df, covariate_names, nlag, region_seasonal)
+    lag_map <- resolve_lags(historic_df, covariate_names, user_options,
+                            lags_path = lags_companion_path(model_fn))
+    generated <- generate_lagged_model(df, covariate_names, lag_map, region_seasonal)
   }
   formula_used <- generated$formula
   df <- generated$data

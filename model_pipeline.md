@@ -17,11 +17,11 @@ flowchart TD
         F["future_data.csv<br/>covariates only, Cases = NA"] --> RBIND
         RBIND["rbind hist + future"] --> OFFSET["offset_years_and_weeks /<br/>offset_years_and_months"]
 
-        READ["read &lt;model&gt;_lags.rds<br/>(fallback: manual / in-predict CV)"]
+        READ["read &lt;model&gt;_lags.rds<br/>lag_map: (location, covariate, lag)<br/>(fallback: manual / in-predict CV)"]
         READ --> BUILD
         OFFSET --> BUILD
 
-        BUILD["add_lagged_columns<br/>cov_LAG_k per location"] --> GROUP["inla.group on each<br/>cov_LAG_k → cov_LAG_k_grp"]
+        BUILD["add_lagged_columns<br/>cov_lag column,<br/>per-location shift by lag_map"] --> GROUP["inla.group on each<br/>cov_lag → cov_lag_grp"]
         GROUP --> FORMULA["build formula"]
         FORMULA --> INLA["inla(NB, offset=log E)<br/>strategy=adaptive"]
         INLA --> SAMPLE["inla.posterior.sample × 1000<br/>+ rnbinom(mu, size)"]
@@ -31,7 +31,7 @@ flowchart TD
     T_WRITE -. "&lt;model&gt;_lags.rds" .-> READ
 ```
 
-## Per-district lag selection (CV path only)
+## Per-(location, covariate) lag selection (CV path only)
 
 ```mermaid
 flowchart TD
@@ -43,8 +43,7 @@ flowchart TD
     FIT --> SCORE["sum log dnbinom(obs, mu, size)<br/>on test rows<br/>(higher = better)"]
 
     SCORE --> AGG_LOC["mean across folds<br/>→ score per (location, covariate, lag)"]
-    AGG_LOC --> AGG_GLOBAL["mean across locations,<br/>argmax (smallest-lag tie-break)<br/>→ one lag per covariate"]
-    AGG_GLOBAL --> NLAG["nlag vector aligned<br/>with covariates"]
+    AGG_LOC --> PICK["argmax per (location, covariate)<br/>smallest-lag tie-break<br/>→ lag_map: (location, covariate, lag)"]
 ```
 
 ## Final INLA formula
@@ -67,10 +66,10 @@ column — no separate linear term, matching ewars_Plus's
 
 | Concept | ewars_Plus | ewars_plus_template |
 |---|---|---|
-| Per-district lag candidate columns | `paste0(alarm_vars, "_LAG", Min_lag:Max_lag)` (`Lag_Model_selection_…R:130`) | `add_lagged_columns(df, covariates, lags)` |
-| Lag selection criterion | INLA-based variable selection (`Sel_Vars`, ~L285) on the full multi-variable formula | per-(district, covariate) expanding-window CV log-score |
-| Aggregation across districts | implicit (one lag fixed per variable for the joint fit) | mean log-score across districts, argmax with smallest-lag tie-break |
-| Final formula | `selected_Model_form_rw` — RW1 smooth on `inla.group`'d selected shifted column | same shape: `f(cov_LAG_k_grp, model='rw1', scale.model=TRUE)` |
+| Per-district lag candidate columns | `paste0(alarm_vars, "_LAG", Min_lag:Max_lag)` (`Lag_Model_selection_…R:130`) | `add_lagged_columns(df, covariates, lag_map)` |
+| Lag selection criterion | INLA-based variable selection (`Sel_Vars`, ~L285) on the full multi-variable formula | per-(location, covariate) expanding-window CV log-score |
+| Per-location lags | yes (one selected lag per district per variable) | yes (lag_map keyed by `(location, covariate)`); rows materialise each location's chosen lag into a shared column |
+| Final formula | `selected_Model_form_rw` — RW1 smooth on `inla.group`'d selected shifted column | same shape: `f(cov_lag_grp, model='rw1', scale.model=TRUE)` |
 | Predictive sampling | INLA posterior sample → `rnbinom` | INLA posterior sample → `rnbinom` |
 | Output rows | sparse subset of requested forecast weeks | one row per `Cases = NA` row of `rbind(historic, future)` |
 | Endemic channel / alarms | computed and emitted | **dropped** |

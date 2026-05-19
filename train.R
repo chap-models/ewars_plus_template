@@ -25,12 +25,13 @@ train_chap <- function(train_fn, model_fn, config_fn = "") {
   }
 
   train_df <- read.csv(train_fn)
-  selected_lags <- resolve_lags(train_df, covariate_names, user_options,
-                                lags_path = NULL)
+  lag_map <- resolve_lags(train_df, covariate_names, user_options,
+                          lags_path = NULL)
 
   lags_path <- lags_companion_path(model_fn)
-  saveRDS(as.list(selected_lags), file = lags_path)
-  message("Wrote selected lags to ", lags_path, ".")
+  saveRDS(lag_map, file = lags_path)
+  message("Wrote selected lag map to ", lags_path, " (",
+          nrow(lag_map), " (location, covariate) rows).")
 }
 
 args <- commandArgs(trailingOnly = TRUE)

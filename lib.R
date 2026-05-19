@@ -40,26 +40,33 @@ offset_years_and_months <- function(df) {
 
 ### Single shifted-lag column construction ####################################
 #
-# Match ewars_Plus's production formula: a single shifted column per (covariate,
-# selected lag) rather than a dlnm crossbasis spread over 1..K. The column is
-# computed per-location with a within-location shift; the first `k` rows of
-# each location become NA.
+# Match ewars_Plus's production formula: a single shifted column per covariate,
+# rather than a dlnm crossbasis spread over 1..K. Each location's rows are
+# shifted by *its own* selected lag, so the column carries values from
+# different lags across locations. The shared INLA-grouped RW1 smooth on this
+# column models a common exposure-response shape; the per-location lag map
+# determines which past observation enters each row.
 
-lagged_col_name <- function(covariate, k) paste0(covariate, "_LAG", k)
+lagged_col_name <- function(covariate) paste0(covariate, "_lag")
 
-add_lagged_columns <- function(df, covariates, lags) {
-  if (!is.null(names(lags))) lags <- lags[covariates]
-  stopifnot(length(lags) == length(covariates))
+# `lag_map`: data.frame(location, covariate, lag) — one row per
+# (location, covariate) pair.
+add_lagged_columns <- function(df, covariates, lag_map) {
+  stopifnot(all(c("location", "covariate", "lag") %in% names(lag_map)))
 
   time_col <- if ("week" %in% names(df)) "week" else "month"
   df <- df[order(df$location, df$ID_year, df[[time_col]]), , drop = FALSE]
 
-  for (i in seq_along(covariates)) {
-    cov <- covariates[i]
-    k   <- as.integer(lags[[i]])
-    new_col <- lagged_col_name(cov, k)
+  for (cov in covariates) {
+    new_col <- lagged_col_name(cov)
     df[[new_col]] <- NA_real_
     for (loc in unique(df$location)) {
+      k_row <- lag_map[lag_map$location == loc & lag_map$covariate == cov, ]
+      if (nrow(k_row) != 1L) {
+        stop(sprintf("lag_map must have exactly one row for (location=%s, covariate=%s); got %d.",
+                     loc, cov, nrow(k_row)))
+      }
+      k <- as.integer(k_row$lag)
       idx <- which(df$location == loc)
       vals <- df[[cov]][idx]
       shifted <- c(rep(NA_real_, k), utils::head(vals, length(vals) - k))
@@ -71,11 +78,11 @@ add_lagged_columns <- function(df, covariates, lags) {
 
 ### Lag selection #############################################################
 #
-# We pick one lag per covariate by aggregating expanding-window CV scores
-# across districts. The per-district intermediate scores are surfaced via
-# `select_lags_per_district()` for inspection, but the final model uses one
-# lag per covariate so the design matrix has consistent shape across
-# locations.
+# We pick one lag per (location, covariate) using expanding-window CV scores.
+# Each location can end up with a different lag for each covariate — closer
+# in spirit to ewars_Plus's per-district selection. The design matrix still
+# has consistent column shape across locations because each row's lagged
+# value enters a shared `<cov>_lag` column.
 
 make_expanding_window_folds <- function(n, n_folds) {
   stopifnot(n_folds >= 1, n >= n_folds + 1)
@@ -153,18 +160,23 @@ select_lags_per_district <- function(df, covariates, candidate_lags,
   do.call(rbind, rows)
 }
 
-# Aggregate per-district scores to one lag per covariate. Mean across
-# districts, argmax. Ties resolved to the smallest lag (more parsimonious).
-pick_best_lag_per_covariate <- function(score_df) {
-  agg <- stats::aggregate(score ~ covariate + lag, data = score_df, FUN = mean,
-                          na.rm = TRUE)
+# Picks one lag per (location, covariate) by argmax of CV log-score. Ties
+# resolved to the smallest lag (more parsimonious).
+# Returns data.frame(location, covariate, lag).
+pick_best_lag_per_location_covariate <- function(score_df) {
   out <- list()
-  for (cov in unique(agg$covariate)) {
-    sub <- agg[agg$covariate == cov, ]
-    sub <- sub[order(-sub$score, sub$lag), ]
-    out[[cov]] <- sub$lag[1]
+  for (loc in unique(score_df$location)) {
+    for (cov in unique(score_df$covariate)) {
+      sub <- score_df[score_df$location == loc & score_df$covariate == cov, ]
+      sub <- sub[order(-sub$score, sub$lag), ]
+      out[[length(out) + 1L]] <- data.frame(
+        location  = loc,
+        covariate = cov,
+        lag       = as.integer(sub$lag[1])
+      )
+    }
   }
-  out
+  do.call(rbind, out)
 }
 
 ### Config + lag resolution (shared by train.R and predict.R) ##################
@@ -182,52 +194,71 @@ parse_model_configuration <- function(file_path) {
 # Companion file written by train.R and read by predict.R so the CV runs once.
 lags_companion_path <- function(model_fn) paste0(model_fn, "_lags.rds")
 
+# Renders a (location, covariate, lag) lag_map compactly for log messages.
+format_lag_map <- function(lag_map) {
+  parts <- vapply(unique(lag_map$covariate), function(cov) {
+    sub <- lag_map[lag_map$covariate == cov, ]
+    sub <- sub[order(sub$location), ]
+    sprintf("%s={%s}", cov,
+            paste(sub$location, sub$lag, sep = ":", collapse = ", "))
+  }, character(1))
+  paste(parts, collapse = " | ")
+}
+
+# Expands a scalar/vector manual `n_lags` into a per-(location, covariate)
+# uniform lag map across the locations seen in `historic_df`.
+expand_manual_lags <- function(historic_df, covariates, manual) {
+  if (length(manual) == 1) manual <- rep(manual, length(covariates))
+  stopifnot(length(manual) == length(covariates))
+  locations <- unique(historic_df$location)
+  cov_lag <- data.frame(covariate = covariates, lag = as.integer(manual),
+                        stringsAsFactors = FALSE)
+  out <- merge(data.frame(location = locations, stringsAsFactors = FALSE),
+               cov_lag, by = character())
+  out[order(out$location, out$covariate), c("location", "covariate", "lag")]
+}
+
 # Resolves lags in priority order:
 #   1. Cached file at `lags_path` (written by train.R).
-#   2. Manual override `user_options$n_lags`.
+#   2. Manual override `user_options$n_lags` (fanned out uniformly per location).
 #   3. CV selection on `historic_df` (the in-predict fallback).
-# Returns a named integer vector aligned with `covariates`.
+# Returns data.frame(location, covariate, lag).
 resolve_lags <- function(historic_df, covariates, user_options,
                          lags_path = NULL) {
   if (!is.null(lags_path) && file.exists(lags_path)) {
     cached <- readRDS(lags_path)
-    if (all(covariates %in% names(cached))) {
-      result <- setNames(
-        vapply(covariates, function(c) as.integer(cached[[c]]), integer(1)),
-        covariates
-      )
+    has_required_cols <- is.data.frame(cached) &&
+      all(c("location", "covariate", "lag") %in% names(cached))
+    if (has_required_cols && all(covariates %in% cached$covariate)) {
+      result <- cached[cached$covariate %in% covariates, , drop = FALSE]
       message("Loaded selected lags from ", lags_path, ": ",
-              paste(covariates, result, sep = "=", collapse = ", "))
+              format_lag_map(result))
       return(result)
     }
     message("Cached lags at ", lags_path,
             " missing one of [", paste(covariates, collapse = ", "),
-            "]; falling back to in-predict resolution.")
+            "] or wrong shape; falling back to in-predict resolution.")
   }
 
   manual <- user_options$n_lags
   if (!is.null(manual) && length(manual) > 0) {
-    if (length(manual) == 1) manual <- rep(manual, length(covariates))
-    stopifnot(length(manual) == length(covariates))
-    message("Using manual n_lags override: ",
-            paste(covariates, manual, sep = "=", collapse = ", "))
-    return(setNames(as.integer(manual), covariates))
+    result <- expand_manual_lags(historic_df, covariates, manual)
+    message("Using manual n_lags override (uniform across locations): ",
+            paste(covariates,
+                  if (length(manual) == 1) rep(manual, length(covariates)) else manual,
+                  sep = "=", collapse = ", "))
+    return(result)
   }
 
   candidate_lags <- user_options$candidate_lags %||% c(7, 10, 12)
   n_folds <- user_options$lag_selection_cv_folds %||% 3
   message("Selecting lags from candidates [",
           paste(candidate_lags, collapse = ", "),
-          "] with ", n_folds, "-fold expanding-window CV...")
+          "] with ", n_folds, "-fold expanding-window CV (per-location)...")
   scores <- select_lags_per_district(
     historic_df, covariates, candidate_lags, n_folds = n_folds
   )
-  best <- pick_best_lag_per_covariate(scores)
-  result <- setNames(
-    vapply(covariates, function(c) as.integer(best[[c]]), integer(1)),
-    covariates
-  )
-  message("Selected lags: ",
-          paste(covariates, result, sep = "=", collapse = ", "))
+  result <- pick_best_lag_per_location_covariate(scores)
+  message("Selected lags: ", format_lag_map(result))
   result
 }

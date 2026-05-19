@@ -6,15 +6,18 @@ backbone (Bayesian hierarchical NB regression with INLA).
 
 ## What this adds on top of ewars_template
 
-- **Per-district adaptive lag selection** for climate covariates over a
+- **Per-(location, covariate) adaptive lag selection** over a
   configurable candidate set (default `[7, 10, 12]` for weekly,
-  configurable for monthly), using expanding-window cross-validation. The
-  per-district CV scores are produced as a side artefact for inspection;
-  the final model uses one lag per covariate, aggregated as the mean
-  log-score across districts (argmax with smallest-lag tie-break).
+  configurable for monthly), using expanding-window cross-validation
+  per location. Each location ends up with its own selected lag for
+  each climate covariate — closer in spirit to ewars_Plus's per-district
+  selection. Ties resolved to the smallest lag (more parsimonious).
 - **Single shifted-lag column per covariate, with an INLA-grouped RW1
   smooth** for the exposure-response shape — matching ewars_Plus's
-  production formula (`selected_Model_form_rw`). No dlnm crossbasis.
+  production formula (`selected_Model_form_rw`). No dlnm crossbasis. The
+  column carries different lags across locations, but the smooth shape
+  is shared, so cross-location pooling on the exposure-response curve
+  is preserved.
 
 ## What this deliberately does not include from ewars_Plus
 
