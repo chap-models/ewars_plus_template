@@ -18,6 +18,11 @@ backbone (Bayesian hierarchical NB regression with INLA).
   column carries different lags across locations, but the smooth shape
   is shared, so cross-location pooling on the exposure-response curve
   is preserved.
+- **Optional location-specific deviation** (`location_specific_effects:
+  true`): adds a per-location RW1 smooth on the same grouped covariate
+  (`replicate = ID_spat`), so each location gets a deviation from the
+  shared curve. Partial-pooled via a shared precision hyperprior.
+  Default `false` keeps the original shared-smooth-only behaviour.
 
 ## What this deliberately does not include from ewars_Plus
 

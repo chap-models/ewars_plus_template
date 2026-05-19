@@ -7,49 +7,6 @@ library(INLA)
 library(dplyr)
 source("lib.R")
 
-# Build the production formula matching ewars_Plus's `selected_Model_form_rw`:
-# a per-covariate RW1 smooth on the inla.group()'d shifted column, no separate
-# linear term (the RW1 captures the exposure-response shape).
-generate_lagged_model <- function(df, covariates, lag_map, region_seasonal) {
-  df <- add_lagged_columns(df, covariates, lag_map)
-
-  smooth_terms <- character()
-  for (cov in covariates) {
-    col <- lagged_col_name(cov)
-    grp <- paste0(col, "_grp")
-    df[[grp]] <- inla.group(df[[col]])
-    smooth_terms <- c(
-      smooth_terms,
-      sprintf("f(%s, model='rw1', scale.model=TRUE)", grp)
-    )
-  }
-
-  formula_str <- paste(
-    "Cases ~ 1 +",
-    "f(ID_spat, model='iid', replicate=ID_year) +",
-    "f(ID_time_cyclic, model='rw1', cyclic=TRUE, scale.model=TRUE) +",
-    paste(smooth_terms, collapse = " + ")
-  )
-  if (region_seasonal) {
-    formula_str <- paste(formula_str,
-      "+ f(ID_time_cyclic2, model='rw1', cyclic=TRUE, scale.model=TRUE, replicate=ID_spat)")
-  }
-  list(formula = as.formula(formula_str), data = df)
-}
-
-generate_basic_model <- function(df, region_seasonal) {
-  formula_str <- paste(
-    "Cases ~ 1 +",
-    "f(ID_spat, model='iid', replicate=ID_year) +",
-    "f(ID_time_cyclic, model='rw1', cyclic=TRUE, scale.model=TRUE)"
-  )
-  if (region_seasonal) {
-    formula_str <- paste(formula_str,
-      "+ f(ID_time_cyclic2, model='rw1', cyclic=TRUE, scale.model=TRUE, replicate=ID_spat)")
-  }
-  list(formula = as.formula(formula_str), data = df)
-}
-
 predict_chap <- function(model_fn, hist_fn, future_fn, preds_fn, config_fn = "") {
   if (config_fn != "") {
     config <- parse_model_configuration(config_fn)
@@ -59,8 +16,9 @@ predict_chap <- function(model_fn, hist_fn, future_fn, preds_fn, config_fn = "")
     covariate_names <- c("rainfall", "mean_temperature")
     user_options    <- list()
   }
-  precision       <- user_options$precision %||% 0.01
-  region_seasonal <- user_options$region_seasonal %||% FALSE
+  precision                 <- user_options$precision %||% 0.01
+  region_seasonal           <- user_options$region_seasonal %||% FALSE
+  location_specific_effects <- user_options$location_specific_effects %||% FALSE
 
   historic_df <- read.csv(hist_fn)
   future_df   <- read.csv(future_fn)
@@ -83,7 +41,10 @@ predict_chap <- function(model_fn, hist_fn, future_fn, preds_fn, config_fn = "")
   } else {
     lag_map <- resolve_lags(historic_df, covariate_names, user_options,
                             lags_path = lags_companion_path(model_fn))
-    generated <- generate_lagged_model(df, covariate_names, lag_map, region_seasonal)
+    generated <- generate_lagged_model(
+      df, covariate_names, lag_map, region_seasonal,
+      location_specific_effects = location_specific_effects
+    )
   }
   formula_used <- generated$formula
   df <- generated$data

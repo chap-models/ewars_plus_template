@@ -179,6 +179,66 @@ pick_best_lag_per_location_covariate <- function(score_df) {
   do.call(rbind, out)
 }
 
+### Model formula builders (shared by predict.R) ###############################
+#
+# Mirrors ewars_Plus's `selected_Model_form_rw`: a per-covariate RW1 smooth on
+# the `inla.group`'d shifted column, no separate linear term (the RW1 captures
+# the exposure-response shape). With `location_specific_effects = TRUE` we
+# additionally add a per-location RW1 deviation on the same grouped column
+# (separate column name, `replicate = ID_spat`) — a hierarchical decomposition
+# into a shared global exposure-response + location-specific deviation, with
+# partial pooling via a shared precision hyperprior.
+
+generate_lagged_model <- function(df, covariates, lag_map, region_seasonal,
+                                  location_specific_effects = FALSE) {
+  df <- add_lagged_columns(df, covariates, lag_map)
+
+  smooth_terms <- character()
+  for (cov in covariates) {
+    col <- lagged_col_name(cov)
+    grp <- paste0(col, "_grp")
+    df[[grp]] <- inla.group(df[[col]])
+    smooth_terms <- c(
+      smooth_terms,
+      sprintf("f(%s, model='rw1', scale.model=TRUE)", grp)
+    )
+    if (location_specific_effects) {
+      grp_loc <- paste0(col, "_grp_loc")
+      df[[grp_loc]] <- df[[grp]]  # INLA needs a distinct column name per f()
+      smooth_terms <- c(
+        smooth_terms,
+        sprintf("f(%s, model='rw1', scale.model=TRUE, replicate=ID_spat)",
+                grp_loc)
+      )
+    }
+  }
+
+  formula_str <- paste(
+    "Cases ~ 1 +",
+    "f(ID_spat, model='iid', replicate=ID_year) +",
+    "f(ID_time_cyclic, model='rw1', cyclic=TRUE, scale.model=TRUE) +",
+    paste(smooth_terms, collapse = " + ")
+  )
+  if (region_seasonal) {
+    formula_str <- paste(formula_str,
+      "+ f(ID_time_cyclic2, model='rw1', cyclic=TRUE, scale.model=TRUE, replicate=ID_spat)")
+  }
+  list(formula = stats::as.formula(formula_str), data = df)
+}
+
+generate_basic_model <- function(df, region_seasonal) {
+  formula_str <- paste(
+    "Cases ~ 1 +",
+    "f(ID_spat, model='iid', replicate=ID_year) +",
+    "f(ID_time_cyclic, model='rw1', cyclic=TRUE, scale.model=TRUE)"
+  )
+  if (region_seasonal) {
+    formula_str <- paste(formula_str,
+      "+ f(ID_time_cyclic2, model='rw1', cyclic=TRUE, scale.model=TRUE, replicate=ID_spat)")
+  }
+  list(formula = stats::as.formula(formula_str), data = df)
+}
+
 ### Config + lag resolution (shared by train.R and predict.R) ##################
 
 parse_model_configuration <- function(file_path) {
