@@ -71,6 +71,61 @@ test_that("generate_lagged_model adds a per-location RW1 deviation when location
   expect_equal(out$data$rainfall_lag_grp_loc, out$data$rainfall_lag_grp)
 })
 
+test_that("get_nonlinearity_backend returns the registered backends and errors on unknown names", {
+  expect_identical(get_nonlinearity_backend("rw1_inla_group"), backend_rw1_inla_group)
+  expect_identical(get_nonlinearity_backend("linear"), backend_linear)
+  expect_error(get_nonlinearity_backend("does_not_exist"),
+               "Unknown nonlinearity backend")
+})
+
+test_that("backend_linear emits a single standardised linear term and no inla.group column by default", {
+  df <- data.frame(
+    location = rep("A", 4), ID_year = 1, ID_spat = "A",
+    week = 1:4, Cases = 1:4, E = 1000,
+    rainfall = c(10, 20, 30, 40),
+    rainfall_lag = c(NA, 10, 20, 30)
+  )
+  res <- backend_linear(df, "rainfall", location_specific_effects = FALSE)
+  expect_equal(res$terms, "rainfall_lag_z")
+  expect_false("rainfall_lag_grp" %in% names(res$df))
+  expect_true("rainfall_lag_z" %in% names(res$df))
+  # NA in source column gets imputed to 0 (standardised mean).
+  expect_equal(res$df$rainfall_lag_z[1], 0)
+  # Standardised column has approximately zero mean and unit sd over non-NA values.
+  z_nonna <- res$df$rainfall_lag_z[-1]
+  expect_lt(abs(mean(z_nonna)), 1e-9)
+  expect_lt(abs(stats::sd(z_nonna) - 1), 1e-9)
+})
+
+test_that("backend_linear emits a per-location random-slope term when location_specific_effects=TRUE", {
+  df <- data.frame(
+    location = rep(c("A", "B"), each = 2), ID_year = 1, ID_spat = c("A","A","B","B"),
+    week = c(1,2,1,2), Cases = 1:4, E = 1000,
+    rainfall = c(10, 20, 30, 40),
+    rainfall_lag = c(NA, 10, NA, 30)
+  )
+  res <- backend_linear(df, "rainfall", location_specific_effects = TRUE)
+  expect_length(res$terms, 2)
+  expect_equal(res$terms[1], "rainfall_lag_z")
+  expect_match(res$terms[2], "^f\\(ID_spat_rainfall, rainfall_lag_z, model='iid'\\)$")
+  expect_true("ID_spat_rainfall" %in% names(res$df))
+})
+
+test_that("generate_lagged_model accepts an alternative nonlinearity backend", {
+  out <- generate_lagged_model(
+    df = minimal_df(),
+    covariates = c("rainfall", "mean_temperature"),
+    lag_map = minimal_lag_map(),
+    region_seasonal = FALSE,
+    nonlinearity = backend_linear
+  )
+  rhs <- paste(as.character(out$formula)[3], collapse = " ")
+  expect_match(rhs, "\\+ *rainfall_lag_z")
+  expect_match(rhs, "\\+ *mean_temperature_lag_z")
+  expect_false(grepl("rainfall_lag_grp", rhs))
+  expect_false(grepl("inla.group", rhs))
+})
+
 test_that("generate_lagged_model still adds the region_seasonal term when requested", {
   out <- generate_lagged_model(
     df = minimal_df(),

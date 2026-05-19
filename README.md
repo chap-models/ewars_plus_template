@@ -23,6 +23,12 @@ backbone (Bayesian hierarchical NB regression with INLA).
   (`replicate = ID_spat`), so each location gets a deviation from the
   shared curve. Partial-pooled via a shared precision hyperprior.
   Default `false` keeps the original shared-smooth-only behaviour.
+- **Pluggable nonlinearity backend** (`nonlinearity: rw1_inla_group |
+  linear`): the lagged-covariate effect is built by a swappable
+  backend. Two are shipped today (`rw1_inla_group` — the
+  ewars_Plus-matched default; `linear` — standardised linear baseline);
+  adding more (crossbasis, splines, …) is a one-function change in
+  `lib.R` with no `predict.R` edits required.
 
 ## Covariate + location-specific lags vs. the upstream ewars_Plus
 
@@ -73,6 +79,41 @@ Cases ~ 1
 ```
 
 where `<cov>_lag_grp = inla.group(<cov>_lag)`. With `location_specific_effects = FALSE` (default) the exposure-response is a single shared smooth across all locations. With it `TRUE`, each location gets a partial-pooled deviation from that shared smooth — a hierarchical decomposition where the global RW1 captures the average exposure-response shape and the per-location RW1 captures location-specific deviation. The two precisions are independent hyperparameters, both estimated from the data.
+
+### Swapping the nonlinearity
+
+The exposure-response piece is built by a *backend* function registered in
+`lib.R`. The interface is:
+
+```r
+function(df, covariate, location_specific_effects) -> list(df = ..., terms = ...)
+```
+
+It mutates `df` with whatever extra columns the parameterisation needs and
+returns the formula fragments that should enter the linear predictor.
+`generate_lagged_model` loops over covariates, calls the backend per
+covariate, and `paste()`s the fragments into the formula string.
+
+Shipping backends:
+
+| Name | Effect added | With `location_specific_effects = TRUE` |
+|---|---|---|
+| `rw1_inla_group` (default) | `f(inla.group(<cov>_lag), model='rw1', scale.model=TRUE)` | adds a parallel `f(..., replicate=ID_spat)` deviation on the same grouped column |
+| `linear` | `<cov>_lag_z` (standardised; NA→0 imputed for prediction-row safety) | adds `f(ID_spat_<cov>, <cov>_lag_z, model='iid')` — per-location random slope |
+
+Choose via `user_options.nonlinearity` in the model config. Adding a new
+backend (crossbasis, splines, GP, …) is a one-function change:
+
+```r
+backend_my_method <- function(df, covariate, location_specific_effects = FALSE) {
+  # mutate df, return formula fragment(s)
+  list(df = df, terms = "...")
+}
+nonlinearity_backends$my_method <- backend_my_method
+```
+
+`predict.R` doesn't need to change — it looks up the backend by name via
+`get_nonlinearity_backend()`.
 
 ### Equivalence vs. divergence vs. upstream
 
