@@ -28,6 +28,8 @@ predict_chap <- function(model_fn, hist_fn, future_fn, preds_fn, config_fn = "")
   future_df$Cases <- rep(NA, nrow(future_df))
   future_df$disease_cases <- rep(NA, nrow(future_df))
   df <- rbind(historic_df, future_df)
+  
+  df$Cases <- round(df$Cases)
 
   if ("week" %in% colnames(df)) {
     df <- mutate(df, ID_time_cyclic = week)
