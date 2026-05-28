@@ -11,7 +11,7 @@ user_options:
     items:
       type: integer
     default: [7, 10, 12]
-    description: Candidate lags considered during per-district lag selection. The selected lag with the highest mean expanding-window CV log-score across districts is used for each covariate. Set n_lags to bypass selection.
+    description: Candidate lags considered during per-(location, covariate) lag selection. For each (location, covariate), the lag with the highest mean expanding-window CV log-score is selected (ties broken to the smallest lag). Set n_lags to bypass selection.
   lag_selection_cv_folds:
     type: integer
     default: 3

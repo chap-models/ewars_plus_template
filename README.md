@@ -76,6 +76,8 @@ Cases ~ 1
   + f(<cov>_lag_grp,  model = "rw1", scale.model = TRUE)               # one per covariate
   [+ f(<cov>_lag_grp_loc, model = "rw1", scale.model = TRUE,
        replicate = ID_spat)]                                            # if location_specific_effects = TRUE
+  [+ f(ID_time_cyclic2, model = "rw1", cyclic = TRUE, scale.model = TRUE,
+       replicate = ID_spat)]                                            # if region_seasonal = TRUE
 ```
 
 where `<cov>_lag_grp = inla.group(<cov>_lag)`. With `location_specific_effects = FALSE` (default) the exposure-response is a single shared smooth across all locations. With it `TRUE`, each location gets a partial-pooled deviation from that shared smooth — a hierarchical decomposition where the global RW1 captures the average exposure-response shape and the per-location RW1 captures location-specific deviation. The two precisions are independent hyperparameters, both estimated from the data.
@@ -130,9 +132,11 @@ nonlinearity_backends$my_method <- backend_my_method
 - No endemic-channel / outbreak-threshold side outputs. The model returns
   posterior-predictive samples only; chap-core consumes those and
   renders alarms downstream if desired.
-- No `foreach(.combine = rbind)` per-fold stacking. `bind_rows` and
-  `match()` are used where the upstream model used the brittle
-  patterns we patched in CHAP-core's `external_models/ewars_plus_api_patch`.
+- No `foreach(.combine = rbind)` per-fold stacking. Per-(location,
+  covariate) frames are built with consistent column names and combined
+  with plain `do.call(rbind, ...)` — no brittle column-name divergence
+  like the patterns we patched in CHAP-core's
+  `external_models/ewars_plus_api_patch`.
 
 ## Configuration
 
@@ -145,6 +149,8 @@ user_option_values:
   lag_selection_cv_folds: 3
   precision: 1
   region_seasonal: false
+  location_specific_effects: false   # add per-location RW1 deviation on grouped covariate
+  nonlinearity: rw1_inla_group       # or "linear"
 ```
 
 Set `n_lags: [7, 10]` (or `n_lags: 7`) to bypass selection and use a
@@ -158,7 +164,8 @@ example_config.yaml    default user options
 train.R                resolves lags (manual override or CV) and writes
                        `<model>_lags.rds` as a companion file
 predict.R              reads the cached lags, fits INLA, samples
-lib.R                  period-offset helpers + lag-selection helpers
+lib.R                  period-offset helpers, lag-selection, nonlinearity
+                       backends, formula builder, lag resolution
 tests/                 testthat unit tests for the helpers
 ```
 
