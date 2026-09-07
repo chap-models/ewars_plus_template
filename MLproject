@@ -34,6 +34,10 @@ user_options:
     type: boolean
     default: false
     description: If true, add a per-location RW1 deviation (replicate=ID_spat) on inla.group(<cov>_lag) for each covariate, in addition to the shared global smooth — hierarchical "global curve + per-location deviation" with partial pooling.
+  lag_grouping:
+    type: string
+    default: location
+    description: Level at which lags are selected. "location" (default) selects one lag per (location, covariate). "parent" selects once per parent org unit (the `parent` property of the dataset's geojson features) on the population-weighted aggregate of its locations, then shares that lag with every location in the group — far fewer CV fits, and useful shrinkage when per-location counts are sparse. Falls back to "location" with a warning if the data carries no usable parent ids.
   nonlinearity:
     type: string
     default: rw1_inla_group

@@ -23,6 +23,11 @@ backbone (Bayesian hierarchical NB regression with INLA).
   (`replicate = ID_spat`), so each location gets a deviation from the
   shared curve. Partial-pooled via a shared precision hyperprior.
   Default `false` keeps the original shared-smooth-only behaviour.
+- **Parent-org-unit lag grouping** (`lag_grouping: parent`): selects one
+  lag per parent org unit instead of one per location, on the
+  population-weighted aggregate of that parent's locations. Cuts the
+  number of CV fits by the district-per-parent factor, and acts as
+  shrinkage where per-location counts are too sparse to pick a lag from.
 - **Pluggable nonlinearity backend** (`nonlinearity: rw1_inla_group |
   linear`): the lagged-covariate effect is built by a swappable
   backend. Two are shipped today (`rw1_inla_group` — the
@@ -124,6 +129,44 @@ nonlinearity_backends$my_method <- backend_my_method
 - **Exposure-response shape differs by default**: upstream's per-district fits give each district its own RW1 smooth. This template defaults to a shared smooth (no per-location deviation). Set `location_specific_effects: true` to get the per-location RW1 back — and the shared smooth then plays the role of an average / prior mean.
 - **What is dropped on purpose**: the joint multi-variable DIC-based selection from upstream, the HTTP service, the on-disk session state, the endemic-channel / outbreak-threshold side outputs.
 
+## Grouping lag selection by parent org unit
+
+Per-location selection costs `locations x covariates x candidate_lags x
+folds` INLA fits. On a weekly Laos dataset of 146 districts with two
+covariates, three candidates and three folds that is 2628 fits in a single
+train call. Setting `lag_grouping: parent` selects per province instead —
+18 groups, so 324 fits.
+
+chap-core already supplies what this needs. It reads the `parent` property
+off each geojson feature and writes it as a `parent` column into the CSVs
+handed to the model, so nothing here parses geojson:
+
+```json
+{"id": "J41dVMJoZF7", "parent": "W6sNfkJcXGC", "level": 3}
+```
+
+How selection changes:
+
+| | `lag_grouping: location` (default) | `lag_grouping: parent` |
+|---|---|---|
+| Series scored | One per location | One per parent, built by summing `Cases` and `E` and taking population-weighted means of the covariates |
+| CV fits | `locations x cov x lags x folds` | `parents x cov x lags x folds` |
+| Resulting lag map | One lag per (location, covariate) | The parent's lag, fanned out to every location in it |
+
+The lag map handed to `add_lagged_columns` still has one row per
+(location, covariate) either way — it errors on a missing pair — so the
+design matrix is unchanged.
+
+**The parent column must actually be populated.** chap-core fills `-` when
+the dataset has no geojson, and `chap eval` discovers one only if it sits
+next to the CSV under the same stem (`data.csv` -> `data.geojson`). If the
+ids are missing or all `-`, `lag_grouping: parent` would put every location
+in a single group, so the model warns and falls back to per-location
+selection instead.
+
+Covariates are weighted by population rather than averaged flat, so a
+province's climate series is not dominated by its smallest district.
+
 ## What this deliberately does not include from ewars_Plus
 
 - No HTTP/plumber service. The MLproject contract uses simple Rscript
@@ -149,6 +192,7 @@ user_option_values:
   lag_selection_cv_folds: 3
   precision: 1
   region_seasonal: false
+  lag_grouping: location             # or "parent" to share lags within a parent org unit
   location_specific_effects: false   # add per-location RW1 deviation on grouped covariate
   nonlinearity: rw1_inla_group       # or "linear"
 ```
@@ -164,8 +208,9 @@ example_config.yaml    default user options
 train.R                resolves lags (manual override or CV) and writes
                        `<model>_lags.rds` as a companion file
 predict.R              reads the cached lags, fits INLA, samples
-lib.R                  period-offset helpers, lag-selection, nonlinearity
-                       backends, formula builder, lag resolution
+lib.R                  period-offset helpers, lag-selection, parent
+                       grouping, nonlinearity backends, formula builder,
+                       lag resolution
 tests/                 testthat unit tests for the helpers
 ```
 

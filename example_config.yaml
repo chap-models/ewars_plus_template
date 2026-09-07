@@ -6,3 +6,4 @@ user_option_values:
   lag_selection_cv_folds: 3
   precision: 1
   region_seasonal: false
+  lag_grouping: location
