@@ -179,6 +179,81 @@ pick_best_lag_per_location_covariate <- function(score_df) {
   do.call(rbind, out)
 }
 
+### Parent-org-unit lag grouping ###############################################
+#
+# chap-core writes a `parent` column — the parent org unit id taken from the
+# dataset's geojson feature properties — into the CSVs handed to the model.
+# With `lag_grouping: parent`, selection runs once per parent group on an
+# aggregated series instead of once per location, and the winning lag is fanned
+# back out to every location in the group. For 146 districts across 18
+# provinces that is 18 CV sweeps rather than 146.
+#
+# Beyond the cost, this is also a shrinkage choice: in sparse district-week
+# data a per-district argmax is largely fitting noise, so sharing one lag
+# across a province is often the better estimate.
+
+parent_placeholder <- "-"
+
+# chap-core fills the `parent` column with "-" when the dataset has no geojson,
+# or when the features carry no `parent` property. Grouping on that would
+# silently collapse every location into one group, so callers check this first.
+has_usable_parents <- function(df) {
+  if (!"parent" %in% names(df)) return(FALSE)
+  parents <- df$parent
+  !all(is.na(parents) | parents == parent_placeholder)
+}
+
+# data.frame(location, group) — one row per location, taking the first parent
+# seen for it.
+location_group_map <- function(df) {
+  map <- data.frame(location = df$location, group = df$parent,
+                    stringsAsFactors = FALSE)
+  map[!duplicated(map$location), , drop = FALSE]
+}
+
+# Collapses the per-location frame to one series per parent group. Cases and
+# population sum; covariates are population-weighted means, so a province's
+# climate series is not dominated by its smallest district. The group id is
+# written into `location` so the existing selection code runs against the
+# aggregate unchanged.
+aggregate_to_parent <- function(df, covariates) {
+  time_col <- if ("week" %in% names(df)) "week" else "month"
+  weights <- df$E
+  weights[!is.finite(weights) | weights < 0] <- 0
+
+  keys <- paste(df$parent, df$ID_year, df[[time_col]], sep = "\r")
+  rows <- lapply(split(seq_len(nrow(df)), keys), function(idx) {
+    w <- weights[idx]
+    if (sum(w) <= 0) w <- rep(1, length(idx))
+    row <- data.frame(
+      location = df$parent[idx[1]],
+      ID_year  = df$ID_year[idx[1]],
+      Cases    = sum(df$Cases[idx], na.rm = TRUE),
+      E        = sum(df$E[idx], na.rm = TRUE),
+      stringsAsFactors = FALSE
+    )
+    row[[time_col]] <- df[[time_col]][idx[1]]
+    for (cov in covariates) {
+      row[[cov]] <- stats::weighted.mean(df[[cov]][idx], w, na.rm = TRUE)
+    }
+    row
+  })
+  agg <- do.call(rbind, rows)
+  rownames(agg) <- NULL
+  agg[order(agg$location, agg$ID_year, agg[[time_col]]), , drop = FALSE]
+}
+
+# Fans a group-level lag map back out to data.frame(location, covariate, lag),
+# which is the shape add_lagged_columns requires — it errors on any missing
+# (location, covariate) pair.
+expand_group_lags <- function(group_lag_map, group_map) {
+  merged <- merge(group_map, group_lag_map,
+                  by.x = "group", by.y = "location")
+  merged <- merged[order(merged$location, merged$covariate), , drop = FALSE]
+  rownames(merged) <- NULL
+  merged[, c("location", "covariate", "lag")]
+}
+
 ### Nonlinearity backends ######################################################
 #
 # A backend is a function with signature
@@ -334,6 +409,25 @@ expand_manual_lags <- function(historic_df, covariates, manual) {
   out[order(out$location, out$covariate), c("location", "covariate", "lag")]
 }
 
+# Validates `lag_grouping` and downgrades "parent" to "location" when the frame
+# carries no usable parent ids — grouping on the "-" placeholder would put every
+# location in one group, which is silently wrong rather than loudly wrong.
+resolve_lag_grouping <- function(historic_df, lag_grouping) {
+  lag_grouping <- lag_grouping %||% "location"
+  if (!lag_grouping %in% c("location", "parent")) {
+    stop("Unknown lag_grouping: '", lag_grouping,
+         "'. Available: location, parent.", call. = FALSE)
+  }
+  if (lag_grouping == "parent" && !has_usable_parents(historic_df)) {
+    warning("lag_grouping='parent' requested but the data has no usable ",
+            "`parent` column (chap-core fills '", parent_placeholder,
+            "' when the dataset has no geojson). Falling back to per-location ",
+            "selection.", call. = FALSE)
+    lag_grouping <- "location"
+  }
+  lag_grouping
+}
+
 # Resolves lags in priority order:
 #   1. Cached file at `lags_path` (written by train.R).
 #   2. Manual override `user_options$n_lags` (fanned out uniformly per location).
@@ -368,13 +462,29 @@ resolve_lags <- function(historic_df, covariates, user_options,
 
   candidate_lags <- user_options$candidate_lags %||% c(7, 10, 12)
   n_folds <- user_options$lag_selection_cv_folds %||% 3
+  lag_grouping <- resolve_lag_grouping(historic_df, user_options$lag_grouping)
+
+  selection_df <- historic_df
+  group_map <- NULL
+  if (lag_grouping == "parent") {
+    group_map <- location_group_map(historic_df)
+    selection_df <- aggregate_to_parent(historic_df, covariates)
+    message("Grouping lag selection by parent org unit: ",
+            length(unique(group_map$group)), " groups for ",
+            nrow(group_map), " locations.")
+  }
+
   message("Selecting lags from candidates [",
           paste(candidate_lags, collapse = ", "),
-          "] with ", n_folds, "-fold expanding-window CV (per-location)...")
+          "] with ", n_folds, "-fold expanding-window CV (per-",
+          lag_grouping, ")...")
   scores <- select_lags_per_district(
-    historic_df, covariates, candidate_lags, n_folds = n_folds
+    selection_df, covariates, candidate_lags, n_folds = n_folds
   )
   result <- pick_best_lag_per_location_covariate(scores)
+  if (lag_grouping == "parent") {
+    result <- expand_group_lags(result, group_map)
+  }
   message("Selected lags: ", format_lag_map(result))
   result
 }
